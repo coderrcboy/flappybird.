@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Flappy Bird Clone</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: system-ui, sans-serif;
+      color: #fff;
+    }
+    #gameContainer {
+      position: relative;
+    }
+    canvas {
+      display: block;
+      background: #4ec0ca; /* fallback */
+      border: 2px solid #fff;
+      border-radius: 8px;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0,0,0,0.35);
+      text-align: center;
+    }
+    #overlay.hidden {
+      display: none;
+    }
+    .btn {
+      margin-top: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid #fff;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #scoreBlock {
+      margin-top: 6px;
+      font-size: 14px;
+    }
+    #highscores {
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    #highscores table {
+      border-collapse: collapse;
+      margin: 0 auto;
+    }
+    #highscores th,
+    #highscores td {
+      padding: 2px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.2);
+    }
+    #highscores th {
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+    <div id="overlay" class="hidden">
+      <h2>Flappy Bird</h2>
+      <p>Press SPACE or click/tap to flap.<br>Avoid the pipes!</p>
+      <div id="scoreBlock">
+        <div>Score: <span id="scoreText">0</span></div>
+        <div>Best: <span id="bestText">0</span></div>
+      </div>
+      <div id="highscores">
+        <div>Top 10 on this device:</div>
+        <table id="scoreTable">
+          <!-- filled by JS -->
+        </table>
+      </div>
+      <button class="btn" onclick="restartGame()">Play Again</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const scoreText = document.getElementById('scoreText');
+    const bestText = document.getElementById('bestText');
+    const scoreTable = document.getElementById('scoreTable');
+
+    // Load images (paths assume ./assets folder)
+    const bgImg = new Image();
+    const birdImg = new Image();
+    const pipeImg = new Image();
+    bgImg.src = 'assets/background.png';
+    birdImg.src = 'assets/bird.png';
+    pipeImg.src = 'assets/pipe.png';
+
+    let gameRunning = false;
+    let bird;
+    let pipes;
+    let score;
+    let gravity = 0.35;
+    let flapStrength = -6.5;
+    let pipeSpeed = -2.5;
+    let pipeGap = 140;
+    let pipeSpacing = 220;
+
+    const HS_KEY = 'flappy_highscores';
+
+    function loadHighScores() {
+      const raw = localStorage.getItem(HS_KEY);
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveHighScores(list) {
+      localStorage.setItem(HS_KEY, JSON.stringify(list));
+    }
+
+    function updateHighScoreTable(list) {
+      if (list.length === 0) {
+        scoreTable.innerHTML = '<tr><td>No scores yet.</td></tr>';
+        return;
+      }
+      let html = '<tr><th>#</th><th>Score</th></tr>';
+      list.forEach((val, idx) => {
+        html += `<tr><td>${idx + 1}</td><td>${val}</td></tr>`;
+      });
+      scoreTable.innerHTML = html;
+    }
+
+    function getBestScore(list) {
+      if (list.length === 0) return 0;
+      return list[0];
+    }
+
+    function initGameState() {
+      bird = {
+        x: 80,
+        y: canvas.height / 2,
+        vy: 0,
+        width: 34,
+        height: 24
+      };
+      pipes = [];
+      score = 0;
+      scoreText.textContent = score;
+      // initial pipes
+      for (let i = 0; i < 3; i++) {
+        const offset = i * pipeSpacing + 300;
+        addPipe(offset);
+      }
+    }
+
+    function addPipe(xPos) {
+      const minY = 80;
+      const maxY = canvas.height - 80 - pipeGap;
+      const topHeight = minY + Math.random() * (maxY - minY);
+
+      pipes.push({
+        x: xPos,
+        topHeight: topHeight,
+        scored: false
+      });
+    }
+
+    function flap() {
+      if (!gameRunning) return;
+      bird.vy = flapStrength;
+    }
+
+    function update() {
+      if (!gameRunning) return;
+
+      // Bird physics
+      bird.vy += gravity;
+      bird.y += bird.vy;
+
+      // Prevent bird from leaving screen
+      if (bird.y + bird.height > canvas.height) {
+        bird.y = canvas.height - bird.height;
+        gameOver();
+      }
+      if (bird.y < 0) {
+        bird.y = 0;
+        bird.vy = 0;
+      }
+
+      // Pipes movement
+      for (let i = 0; i < pipes.length; i++) {
+        pipes[i].x += pipeSpeed;
+      }
+
+      // Remove off-screen pipes and add new ones
+      const SPRITE_W = pipeImg.width || 52;
+      if (pipes.length && pipes[0].x + SPRITE_W < 0) {
+        pipes.shift();
+        const lastX = pipes[pipes.length - 1].x;
+        addPipe(lastX + pipeSpacing);
+      }
+
+      // Collision + scoring
+      const HIT_WIDTH = SPRITE_W * 0.55;   // even narrower horizontal hitbox
+      const GAP_MARGIN = 6;                // vertical margin near the gap
+      const EDGE_MARGIN = 6;               // horizontal margin on both sides
+
+      for (let i = 0; i < pipes.length; i++) {
+        const p = pipes[i];
+        const topHeight = p.topHeight;
+        const bottomY = topHeight + pipeGap;
+
+        // Bird rect (can also be slightly shrunk horizontally if you want)
+        const bx1 = bird.x + EDGE_MARGIN;
+        const bx2 = bird.x + bird.width - EDGE_MARGIN;
+        const by1 = bird.y;
+        const by2 = bird.y + bird.height;
+
+        // Center the narrower pipe hitbox horizontally in the sprite
+        const tx1 = p.x + (SPRITE_W - HIT_WIDTH) / 2 + EDGE_MARGIN;
+        const tx2 = tx1 + HIT_WIDTH - EDGE_MARGIN * 2;
+
+        // Top pipe hitbox
+        const ty1 = 0;
+        const ty2 = topHeight - GAP_MARGIN;
+
+        // Bottom pipe hitbox
+        const bxp1 = tx1;
+        const bxp2 = tx2;
+        const byp1 = bottomY + GAP_MARGIN;
+        const byp2 = canvas.height;
+
+        const collideTop = bx1 < tx2 && bx2 > tx1 && by1 < ty2 && by2 > ty1;
+        const collideBottom = bx1 < bxp2 && bx2 > bxp1 && by1 < byp2 && by2 > byp1;
+
+        if (collideTop || collideBottom) {
+          gameOver();
+          break;
+        }
+
+        // Score when bird passes pipe sprite center-ish
+        if (!p.scored && bird.x > p.x + SPRITE_W) {
+          p.scored = true;
+          score++;
+          scoreText.textContent = score;
+        }
+      }
+    }
+
+    function draw() {
+      // Background
+      if (bgImg.complete) {
+        ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = '#4ec0ca';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // Pipes (full sprite; hitbox is smaller)
+      ctx.save();
+      ctx.fillStyle = '#5ecf64';
+      for (let i = 0; i < pipes.length; i++) {
+        const p = pipes[i];
+        const SPRITE_W = pipeImg.width || 52;
+        const topHeight = p.topHeight;
+
+        // Top pipe
+        if (pipeImg.complete) {
+          ctx.save();
+          ctx.translate(p.x, topHeight);
+          ctx.scale(1, -1);
+          ctx.drawImage(pipeImg, 0, 0, SPRITE_W, topHeight);
+          ctx.restore();
+        } else {
+          ctx.fillRect(p.x, 0, SPRITE_W, topHeight);
+        }
+
+        // Bottom pipe
+        const bottomY = topHeight + pipeGap;
+        const bottomHeight = canvas.height - bottomY;
+        if (pipeImg.complete) {
+          ctx.drawImage(pipeImg, p.x, bottomY, SPRITE_W, bottomHeight);
+        } else {
+          ctx.fillRect(p.x, bottomY, SPRITE_W, bottomHeight);
+        }
+      }
+      ctx.restore();
+
+      // Bird
+      if (birdImg.complete) {
+        ctx.drawImage(birdImg, bird.x, bird.y, bird.width, bird.height);
+      } else {
+        ctx.fillStyle = '#ffeb3b';
+        ctx.fillRect(bird.x, bird.y, bird.width, bird.height);
+      }
+
+      // Score text
+      ctx.fillStyle = '#fff';
+      ctx.font = '20px system-ui';
+      ctx.fillText('Score: ' + score, 10, 30);
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function gameOver() {
+      gameRunning = false;
+      let highs = loadHighScores();
+      highs.push(score);
+      highs.sort((a, b) => b - a);   // descending
+      if (highs.length > 10) {
+        highs = highs.slice(0, 10);  // keep top 10
+      }
+      saveHighScores(highs);
+      bestText.textContent = getBestScore(highs);
+      updateHighScoreTable(highs);
+      overlay.classList.remove('hidden');
+    }
+
+    function restartGame() {
+      initGameState();
+      overlay.classList.add('hidden');
+      gameRunning = true;
+    }
+
+    // Input
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (!gameRunning) {
+          restartGame();
+        } else {
+          flap();
+        }
+      }
+    });
+    canvas.addEventListener('mousedown', () => {
+      if (!gameRunning) {
+        restartGame();
+      } else {
+        flap();
+      }
+    });
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      if (!gameRunning) {
+        restartGame();
+      } else {
+        flap();
+      }
+    }, { passive: false });
+
+    // Initialize
+    initGameState();
+    const initialHighs = loadHighScores();
+    bestText.textContent = getBestScore(initialHighs);
+    updateHighScoreTable(initialHighs);
+    overlay.classList.remove('hidden'); // show menu on first load
+
+    loop();
+  </script>
+</body>
+</html>
